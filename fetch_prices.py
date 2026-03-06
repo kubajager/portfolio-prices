@@ -6,14 +6,15 @@ Runs via GitHub Actions every 30 min on weekdays.
 APIs used (all free, no API key required):
   - CoinGecko       → BTC/EUR
   - Frankfurter.app → EUR/CZK, USD/CZK  (ECB reference rates)
-  - yfinance        → ASML, RHM, VUSA, DRS, PLTR, NW0
+  - Yahoo Finance   → stocks via direct API call with browser headers
+                      (avoids rate-limiting on GitHub Actions IPs)
 """
 
 import json
+import time
 import datetime
 import sys
 import requests
-import yfinance as yf
 
 # ── Ticker map: dashboard ID → Yahoo Finance symbol ──────────────────────────
 STOCK_TICKERS = {
@@ -22,7 +23,15 @@ STOCK_TICKERS = {
     "VUSA": "VUSA.AS",   # Euronext Amsterdam
     "DRS":  "DRS",       # NASDAQ
     "PLTR": "PLTR",      # NYSE
-    "NW0":  "NW0.AS",    # Euronext Amsterdam
+    "NW0":  "CSG.AS",    # Euronext Amsterdam (CSG N.V.)
+}
+
+# Browser-like headers — prevents Yahoo Finance from blocking GitHub Actions IPs
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "application/json",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://finance.yahoo.com/",
 }
 
 
@@ -48,18 +57,29 @@ def fetch_fx() -> tuple[float, float]:
     return eur_czk, usd_czk
 
 
+def fetch_yahoo_price(symbol: str) -> float:
+    """Fetch latest price directly from Yahoo Finance v8 API."""
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+    params = {"interval": "1d", "range": "5d"}
+    r = requests.get(url, headers=HEADERS, params=params, timeout=10)
+    r.raise_for_status()
+    data = r.json()
+    closes = data["chart"]["result"][0]["indicators"]["quote"][0]["close"]
+    # Filter out None values (market closed days) and return latest
+    closes = [c for c in closes if c is not None]
+    if not closes:
+        raise ValueError(f"No close prices returned for {symbol}")
+    return round(float(closes[-1]), 2)
+
+
 def fetch_stocks() -> dict:
     prices = {}
     for key, symbol in STOCK_TICKERS.items():
         try:
-            ticker = yf.Ticker(symbol)
-            hist = ticker.history(period="2d")  # 2d buffer for late-closing markets
-            if not hist.empty:
-                price = round(float(hist["Close"].iloc[-1]), 2)
-                prices[key] = price
-                print(f"  {key} ({symbol}): {price}")
-            else:
-                print(f"  {key} ({symbol}): no data returned", file=sys.stderr)
+            price = fetch_yahoo_price(symbol)
+            prices[key] = price
+            print(f"  {key} ({symbol}): {price}")
+            time.sleep(0.3)  # be polite — avoid burst rate limiting
         except Exception as e:
             print(f"  {key} ({symbol}): FAILED — {e}", file=sys.stderr)
     return prices
@@ -104,7 +124,6 @@ def main():
         print(f"\n⚠ Partial fetch — {len(errors)} error(s):", file=sys.stderr)
         for e in errors:
             print(f"  {e}", file=sys.stderr)
-        # Exit 0 anyway — partial data is better than no commit
     else:
         print(f"\n✓ All prices fetched successfully")
 
