@@ -1,0 +1,37 @@
+name: Fetch Prices
+
+on:
+  schedule:
+    # Every 30 min, Mon–Fri, 07:00–17:00 UTC (covers EU + US market hours)
+    - cron: '0,30 7-17 * * 1-5'
+  workflow_dispatch: # Allow manual trigger from GitHub UI
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # Required to commit prices.json back to repo
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Fetch prices
+        run: python fetch_prices.py
+
+      - name: Commit updated prices.json
+        run: |
+          git config user.name  "prices-bot"
+          git config user.email "prices-bot@noreply"
+          git add prices.json
+          # Only commit if prices.json actually changed
+          git diff --staged --quiet || git commit -m "prices: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push
